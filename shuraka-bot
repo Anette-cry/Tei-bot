@@ -1,0 +1,413 @@
+import os
+import random
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+TOKEN = os.environ["TELEGRAM_BOT_TOKEN_2"]
+
+# ── State ─────────────────────────────────────────────────────────────────────
+active_questions: dict[int, dict] = {}
+scores: dict[int, dict] = {}
+known_chats: set[int] = set()
+paused_chats: set[int] = set()
+
+PREGUNTAS = [
+    {"q": "⚔️ ¿En qué obra aparece el personaje Guts como protagonista?", "a": "berserk"},
+    {"q": "🌹 ¿Cómo se llama la protagonista femenina de 'Akatsuki no Yona'?", "a": "yona"},
+    {"q": "🗡️ ¿Qué tipo de criatura es Elias Ainsworth en 'El Mago Antiguo y su Nueva Discípula'?", "a": "mago"},
+    {"q": "🌙 ¿En qué ciudad transcurre la mayor parte de 'Tokyo Ghoul'?", "a": "tokyo"},
+    {"q": "👑 ¿Cuál es el nombre del titan de Eren Jaeger en 'Attack on Titan'?", "a": "titan de ataque"},
+    {"q": "🥀 ¿De qué color son los ojos de Violet Evergarden?", "a": "azul"},
+    {"q": "⚔️ ¿Cómo se llama la espada de Kirito en Sword Art Online?", "a": "elucidator"},
+    {"q": "👁️ ¿Cuál es el sharingan más poderoso del universo Naruto?", "a": "rinnegan"},
+    {"q": "🌙 ¿Qué significan las letras 'OP' cuando se habla de un personaje de anime?", "a": "overpowered"},
+    {"q": "🏰 ¿En qué reino transcurre 'Arslan Senki'?", "a": "pars"},
+    {"q": "🌹 ¿Cómo se llama el demonio que acompaña a Rin Okumura en 'Blue Exorcist'?", "a": "kuro"},
+    {"q": "⚔️ ¿Cuántos Pilares tiene la organización de cazadores en 'Demon Slayer'?", "a": "nueve"},
+    {"q": "🗡️ ¿Qué fruta del diablo come Monkey D. Luffy?", "a": "gomu gomu"},
+    {"q": "👑 ¿Cómo se llama el rey de los demonios en 'Ao no Exorcist'?", "a": "satán"},
+    {"q": "🌸 ¿Cuántas casas nobles existen en 'Black Clover'?", "a": "cuatro"},
+    {"q": "🌙 ¿Qué es un 'seiyuu'?", "a": "actor de voz"},
+    {"q": "🥀 ¿En qué año se publicó el primer capítulo de 'Fullmetal Alchemist'?", "a": "2001"},
+    {"q": "⚔️ ¿Cómo se llama el grupo de cazadores de demonios al que pertenece Tanjiro?", "a": "cuerpo de cazadores"},
+    {"q": "👁️ ¿Qué significa 'nakama' en japonés?", "a": "compañero"},
+    {"q": "🌹 ¿Quién es el autor de 'Berserk'?", "a": "kentaro miura"},
+]
+
+TITULOS = [
+    ("👑", "Soberano del Reino Carmesí", "Triunfador/a"),
+    ("🥈", "Caballero de la Rosa de Plata", None),
+    ("🥉", "Guardián del Umbral Escarlata", None),
+]
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
+    member = await context.bot.get_chat_member(chat_id, user_id)
+    return member.status in ("administrator", "creator")
+
+
+async def _send_trivia(bot, chat_id: int):
+    if chat_id in active_questions:
+        return
+    pregunta = random.choice(PREGUNTAS)
+    active_questions[chat_id] = {"question": pregunta["q"], "answer": pregunta["a"]}
+    await bot.send_message(
+        chat_id,
+        "🌹 PREGUNTA DEL REINO 🌹\n\n"
+        f"{pregunta['q']}\n\n"
+        "⏳ El primero en responder correctamente gana un punto de gloria."
+    )
+
+
+# ── Auto-trivia job (every 1 hour) ────────────────────────────────────────────
+
+async def auto_trivia(context: ContextTypes.DEFAULT_TYPE):
+    for chat_id in list(known_chats):
+        if chat_id in paused_chats:
+            continue
+        try:
+            await _send_trivia(context.bot, chat_id)
+        except Exception:
+            pass
+
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = (
+        "👑 RANKING DEL REINO CARMESÍ 👑\n\n"
+        "🌙 Bienaventurados seáis, viajeros del destino, se os presenta vuestro gran Padisha Shuraka Loram ☀️\n\n"
+        "Este es el registro de gloria del mes.\n\n"
+        "⚔️ Cada respuesta correcta os concede honor.\n"
+        "Al final del ciclo lunar, el destino decidirá los tres primeros puestos.\n\n"
+        "🏆 POSICIONES DEL MES 🏆\n\n"
+        "🥇 1º PUESTO — Capítulo dedicado + título 'Triunfador/a'\n"
+        "«Felicidades, vuestro nombre será recordado en lo más alto,\n"
+        "pues este mes habrá de coronaros.»\n\n"
+        "🥈 2º PUESTO\n"
+        "«Os es reconocido vuestro esfuerzo y participación;\n"
+        "no os rindáis, pues la próxima victoria bien pudiera ser vuestra.»\n\n"
+        "🥉 3º PUESTO\n"
+        "«Os es reconocido vuestro esfuerzo y participación;\n"
+        "no os rindáis, pues la próxima victoria bien pudiera ser vuestra.»\n\n"
+        "💌 Escribid /puntuacion para ver la gloria acumulada hasta ahora."
+    )
+    await update.message.reply_text(texto)
+
+
+async def finalranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    chat_scores = scores.get(chat_id, {})
+
+    if len(chat_scores) < 3:
+        await update.message.reply_text(
+            "⚠️ Aún no hay suficientes guerreros en el ranking.\n"
+            "Se necesitan al menos 3 participantes para el ranking final."
+        )
+        return
+
+    top = sorted(chat_scores.values(), key=lambda x: x["points"], reverse=True)[:3]
+
+    primero = top[0]["name"]
+    segundo = top[1]["name"]
+    tercero = top[2]["name"]
+    pts1 = top[0]["points"]
+    pts2 = top[1]["points"]
+    pts3 = top[2]["points"]
+
+    mensaje = (
+        "👑 ⚔️ RANKING FINAL DEL REINO ⚔️ 👑\n\n"
+        f"💌 🥇 {primero} — {pts1} punto(s)\n"
+        "Felicidades, vuestro nombre será recordado en lo más alto,\n"
+        "pues este mes habrá de coronaros.\n"
+        "(Título: Triunfador/a)\n\n"
+        f"🥈 {segundo} — {pts2} punto(s)\n"
+        "Os es reconocido vuestro esfuerzo y participación;\n"
+        "no os rindáis, pues la próxima victoria bien pudiera ser vuestra.\n\n"
+        f"🥉 {tercero} — {pts3} punto(s)\n"
+        "Os es reconocido vuestro esfuerzo y participación;\n"
+        "no os rindáis, pues la próxima victoria bien pudiera ser vuestra."
+    )
+
+    await update.message.reply_text(mensaje)
+
+
+async def trivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    if not await _is_admin(context, chat_id, user_id):
+        await update.message.reply_text("⚠️ Solo los administradores pueden lanzar preguntas.")
+        return
+
+    if chat_id in active_questions:
+        current = active_questions[chat_id]["question"]
+        await update.message.reply_text(
+            f"🗡️ Ya hay una pregunta activa:\n\n{current}\n\n¡Responded antes de que caiga el telón!"
+        )
+        return
+
+    await _send_trivia(context.bot, chat_id)
+
+
+async def puntuacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    chat_scores = scores.get(chat_id, {})
+
+    if not chat_scores:
+        await update.message.reply_text("📋 Aún no hay puntuaciones registradas en este reino.")
+        return
+
+    sorted_scores = sorted(chat_scores.values(), key=lambda x: x["points"], reverse=True)
+    medallas = ["🥇", "🥈", "🥉"]
+    lineas = [
+        f"{medallas[i] if i < 3 else str(i+1)+'.'} {e['name']} — {e['points']} punto(s)"
+        for i, e in enumerate(sorted_scores)
+    ]
+    await update.message.reply_text("⚔️ GLORIA DEL REINO ⚔️\n\n" + "\n".join(lineas))
+
+
+async def resetpuntuacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not await _is_admin(context, chat_id, update.effective_user.id):
+        await update.message.reply_text("⚠️ Solo los administradores pueden reiniciar las puntuaciones.")
+        return
+    scores.pop(chat_id, None)
+    await update.message.reply_text("✅ Las puntuaciones del reino han sido reiniciadas.")
+
+
+async def addtrivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not await _is_admin(context, chat_id, update.effective_user.id):
+        await update.message.reply_text("⚠️ Solo los administradores pueden añadir preguntas.")
+        return
+
+    if not context.args or "|" not in " ".join(context.args):
+        await update.message.reply_text(
+            "📝 Uso: /addtrivia <pregunta> | <respuesta>\n\n"
+            "Ejemplo:\n/addtrivia ¿Quién escribió Berserk? | Kentaro Miura"
+        )
+        return
+
+    texto = " ".join(context.args)
+    partes = texto.split("|", 1)
+    pregunta, respuesta = partes[0].strip(), partes[1].strip().lower()
+
+    if not pregunta or not respuesta:
+        await update.message.reply_text("❌ La pregunta o la respuesta están vacías.")
+        return
+
+    PREGUNTAS.append({"q": pregunta, "a": respuesta})
+    await update.message.reply_text(
+        f"✅ Pregunta añadida:\n\n❓ {pregunta}\n✔️ Respuesta: {respuesta.capitalize()}\n\nTotal: {len(PREGUNTAS)}"
+    )
+
+
+async def listtrivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not await _is_admin(context, chat_id, update.effective_user.id):
+        await update.message.reply_text("⚠️ Solo los administradores pueden ver la lista.")
+        return
+
+    lineas = [f"{i+1}. {p['q']}" for i, p in enumerate(PREGUNTAS)]
+    texto = f"📋 PREGUNTAS DEL REINO ({len(PREGUNTAS)} total)\n\n" + "\n".join(lineas)
+    if len(texto) > 4000:
+        texto = texto[:4000] + "\n... (lista truncada)"
+    await update.message.reply_text(texto)
+
+
+async def skiptrivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not await _is_admin(context, chat_id, update.effective_user.id):
+        await update.message.reply_text("⚠️ Solo los administradores pueden saltar la pregunta.")
+        return
+
+    if chat_id not in active_questions:
+        await update.message.reply_text("❓ No hay ninguna pregunta activa en este momento.")
+        return
+
+    respuesta = active_questions.pop(chat_id)["answer"]
+    await update.message.reply_text(
+        f"⏭️ Pregunta descartada.\n\nLa respuesta era: «{respuesta.capitalize()}»\n\nEscribid /trivia para la siguiente."
+    )
+
+
+async def stoptrivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not await _is_admin(context, chat_id, update.effective_user.id):
+        await update.message.reply_text("⚠️ Solo los administradores pueden pausar la trivia.")
+        return
+    paused_chats.add(chat_id)
+    active_questions.pop(chat_id, None)
+    await update.message.reply_text(
+        "⏸️ Trivia automática pausada.\n\nEscribid /starttrivia para reanudarla."
+    )
+
+
+async def starttrivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not await _is_admin(context, chat_id, update.effective_user.id):
+        await update.message.reply_text("⚠️ Solo los administradores pueden reanudar la trivia.")
+        return
+    paused_chats.discard(chat_id)
+    await update.message.reply_text(
+        "▶️ Trivia automática reanudada.\n\nEl bot lanzará preguntas cada hora automáticamente."
+    )
+    await _send_trivia(context.bot, chat_id)
+
+
+async def dedicar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not await _is_admin(context, chat_id, update.effective_user.id):
+        await update.message.reply_text("⚠️ Solo los administradores pueden enviar una dedicatoria.")
+        return
+
+    target = None
+    mensaje = ""
+    target_name = ""
+
+    if update.message.reply_to_message:
+        target = update.message.reply_to_message.from_user
+        mensaje = " ".join(context.args) if context.args else ""
+    elif context.args:
+        partes = " ".join(context.args)
+        if "|" in partes:
+            mitades = partes.split("|", 1)
+            target_name = mitades[0].strip()
+            mensaje = mitades[1].strip()
+        else:
+            target_name = partes
+    else:
+        await update.message.reply_text(
+            "📝 Uso:\n"
+            "• Responde al mensaje del ganador: /dedicar <mensaje opcional>\n"
+            "• O escribe: /dedicar <nombre> | <mensaje>"
+        )
+        return
+
+    if target:
+        nombre_html = target.mention_html()
+    else:
+        nombre_html = f"<b>{target_name}</b>"
+
+    cuerpo = f"\n\n«{mensaje}»" if mensaje else ""
+
+    texto = (
+        "🌹✨ DEDICATORIA DEL REINO CARMESÍ ✨🌹\n\n"
+        f"Este capítulo está dedicado con honor y gratitud a {nombre_html},\n"
+        f"quien este mes ha brillado entre todos como la estrella más alta del firmamento.{cuerpo}\n\n"
+        "🥀 Que vuestra gloria perdure en la memoria de este reino.\n"
+        "⚔️ — Administración del Reino Carmesí"
+    )
+
+    await update.message.reply_text(texto, parse_mode="HTML")
+
+
+async def coronar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if not await _is_admin(context, chat_id, update.effective_user.id):
+        await update.message.reply_text("⚠️ Solo los administradores pueden celebrar la coronación.")
+        return
+
+    chat_scores = scores.get(chat_id, {})
+    if not chat_scores:
+        await update.message.reply_text("📜 Aún no hay gloria acumulada en este reino. ¡Que comience la trivia!")
+        return
+
+    clasificados = sorted(chat_scores.values(), key=lambda x: x["points"], reverse=True)[:3]
+
+    lineas = []
+    for i, jugador in enumerate(clasificados):
+        medalla, titulo, label = TITULOS[i]
+        titulo_extra = f" (Título: {label})" if label else ""
+        lineas.append(
+            f"{medalla} <b>{titulo}</b>{titulo_extra}\n"
+            f"   {jugador['name']} — {jugador['points']} punto(s) de gloria"
+        )
+
+    podio = "\n\n".join(lineas)
+
+    reset = context.args and context.args[0].lower() == "reset"
+
+    texto = (
+        "⚔️🌹 CEREMONIA DE CORONACIÓN — REINO CARMESÍ 🌹⚔️\n\n"
+        "El ciclo ha llegado a su fin. Los pergaminos han sido sellados\n"
+        "y la gloria de los valientes queda grabada para la eternidad.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{podio}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🥀 Que vuestros nombres resuenen en los pasillos del reino.\n"
+        "Un nuevo ciclo comienza. ¿Seréis capaces de reclamar la corona?\n\n"
+        "⚔️ — Administración del Reino Carmesí"
+    )
+
+    if reset:
+        scores[chat_id] = {}
+        texto += "\n\n📜 Las puntuaciones han sido reiniciadas. ¡Que comience la nueva era!"
+
+    await update.message.reply_text(texto, parse_mode="HTML")
+
+
+# ── Track group chats & check answers ─────────────────────────────────────────
+
+async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    known_chats.add(chat_id)
+
+    if chat_id not in active_questions:
+        return
+
+    user_answer = update.message.text.strip().lower()
+    correct_answer = active_questions[chat_id]["answer"].lower()
+
+    if user_answer == correct_answer or correct_answer in user_answer:
+        user = update.effective_user
+        name = user.first_name or user.username or "Desconocido"
+
+        if chat_id not in scores:
+            scores[chat_id] = {}
+        if user.id not in scores[chat_id]:
+            scores[chat_id][user.id] = {"name": name, "points": 0}
+
+        scores[chat_id][user.id]["points"] += 1
+        total = scores[chat_id][user.id]["points"]
+        del active_questions[chat_id]
+
+        await update.message.reply_text(
+            f"🌹 ¡Correcto, {user.mention_html()}!\n\n"
+            f"La respuesta era: «{correct_answer.capitalize()}»\n"
+            f"⚔️ Lleváis {total} punto(s) de gloria.",
+            parse_mode="HTML"
+        )
+
+
+# ── App setup ──────────────────────────────────────────────────────────────────
+
+app = Application.builder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("ranking", ranking))
+app.add_handler(CommandHandler("finalranking", finalranking))
+app.add_handler(CommandHandler("trivia", trivia))
+app.add_handler(CommandHandler("puntuacion", puntuacion))
+app.add_handler(CommandHandler("resetpuntuacion", resetpuntuacion))
+app.add_handler(CommandHandler("addtrivia", addtrivia))
+app.add_handler(CommandHandler("listtrivia", listtrivia))
+app.add_handler(CommandHandler("skiptrivia", skiptrivia))
+app.add_handler(CommandHandler("coronar", coronar))
+app.add_handler(CommandHandler("dedicar", dedicar))
+app.add_handler(CommandHandler("stoptrivia", stoptrivia))
+app.add_handler(CommandHandler("starttrivia", starttrivia))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, on_group_message))
+
+app.job_queue.run_repeating(auto_trivia, interval=3600, first=3600)
+
+print("👑 Bot del Reino activo (trivia automática cada 1h)...")
+app.run_polling()
